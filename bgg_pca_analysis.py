@@ -119,6 +119,27 @@ def analyze_principal_components(data: pd.DataFrame):
     print("\nCorrelation of Numerical Features with PC1:")
     print(correlations.sort_values(ascending=False))
 
+    # --- Analyze Categorical Features vs PC1 ---
+    # We can see which categories/mechanics are associated with high or low PC1 scores.
+    print("\n--- Analysis of Categorical Features vs PC1 ---")
+    
+    if 'main_category' in data.columns:
+        print("\nAverage PC1 Score by Main Category (Top 10 Highest/Lowest):")
+        category_pc1 = data.groupby('main_category')['PC1'].mean().sort_values(ascending=False)
+        print("--- HIGHEST PC1 (often more complex/niche) ---")
+        print(category_pc1.head(10))
+        print("\n--- LOWEST PC1 (often more accessible/mainstream) ---")
+        print(category_pc1.tail(10))
+
+    if 'main_mechanic' in data.columns:
+        print("\nAverage PC1 Score by Main Mechanic (Top 10 Highest/Lowest):")
+        mechanic_pc1 = data.groupby('main_mechanic')['PC1'].mean().sort_values(ascending=False)
+        print("--- HIGHEST PC1 (often more complex/niche) ---")
+        print(mechanic_pc1.head(10))
+        print("\n--- LOWEST PC1 (often more accessible/mainstream) ---")
+        print(mechanic_pc1.tail(10))
+
+
     # --- Visualization ---
     logger.info("Generating plot...")
     plt.figure(figsize=(12, 8))
@@ -137,19 +158,19 @@ def analyze_principal_components(data: pd.DataFrame):
         hue=hue_col, palette='viridis',
         size=size_col, sizes=(20, 200), alpha=0.7
     )
-    plt.title('PCoA of BGG Hot Games (based on Gower Distance)')
+    plt.title('PCoA of Top 5000 BGG Games (based on Gower Distance)')
     plt.xlabel('Principal Component 1')
     plt.ylabel('Principal Component 2')
     plt.grid(True)
     
-    plot_filename = 'bgg_pcoa_plot.png'
+    plot_filename = 'bgg_top_5000_pcoa_plot.png'
     plt.savefig(plot_filename)
     logger.info(f"Plot saved to {plot_filename}")
     plt.show()
 
 def main():
     """Main function to run the analysis."""
-    csv_file = 'bgg_hot_games.csv'
+    csv_file = 'bgg_top_games_updated.csv'
     df_cleaned = load_and_clean_data(csv_file)
     
     if df_cleaned is not None:

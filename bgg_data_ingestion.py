@@ -6,6 +6,8 @@ import json
 from typing import List, Dict, Any
 import logging
 from pathlib import Path
+from bs4 import BeautifulSoup
+import datetime
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -15,8 +17,9 @@ class BGGDataIngester:
     def __init__(self, base_url: str = "https://boardgamegeek.com/xmlapi2"):
         self.base_url = base_url
         self.session = requests.Session()
-        # Be respectful to BGG servers
-        self.request_delay = 1.0
+        self.session.headers.update({'User-Agent': 'BGG-Analysis-Script/1.0'})
+        # Be respectful to BGG servers. A longer delay helps prevent 429 errors.
+        self.request_delay = 2.5
         
     def make_request(self, endpoint: str, params: Dict[str, Any] = None) -> ET.Element:
         """Make a request to BGG API with rate limiting and error handling."""
@@ -24,6 +27,14 @@ class BGGDataIngester:
         
         try:
             response = self.session.get(url, params=params)
+
+            # Handle 429 Too Many Requests by waiting and retrying recursively.
+            if response.status_code == 429:
+                wait_time = 30
+                logger.warning(f"Received 429 Too Many Requests. Waiting {wait_time}s and retrying...")
+                time.sleep(wait_time)
+                return self.make_request(endpoint, params)
+
             response.raise_for_status()
             
             # Parse XML response
@@ -31,8 +42,8 @@ class BGGDataIngester:
             
             # Check if we need to wait for processing (BGG returns 202 for queued requests)
             if response.status_code == 202:
-                logger.info("Request queued, waiting for processing...")
-                time.sleep(5)
+                logger.info("Request queued by BGG, waiting 10 seconds before retrying...")
+                time.sleep(10)
                 return self.make_request(endpoint, params)
             
             # Rate limiting
@@ -50,7 +61,9 @@ class BGGDataIngester:
         """Fetch detailed information for a list of game IDs."""
         games_data = []
         
-        # BGG API allows up to 20 IDs per request
+        # BGG API can be slow or return 202 (Accepted) for very large batches.
+        # While the API can handle multiple IDs, very large requests can fail.
+        # A smaller, more conservative batch size is more reliable.
         batch_size = 20
         
         for i in range(0, len(game_ids), batch_size):
@@ -277,32 +290,125 @@ class BGGDataIngester:
         df.to_csv(csv_file, index=False, encoding='utf-8')
         logger.info(f"Saved flattened data to {csv_file}")
 
+def load_ids_from_csv(filepath: str, id_column: str = 'id') -> List[int]:
+    """Loads a list of game IDs from a CSV file."""
+    logger.info(f"Loading base game IDs from {filepath}...")
+    try:
+        df = pd.read_csv(filepath)
+        if id_column not in df.columns:
+            logger.error(f"ID column '{id_column}' not found in {filepath}.")
+            return []
+        
+        # Drop rows with missing IDs and convert to int
+        ids = df[id_column].dropna().astype(int).tolist()
+        logger.info(f"Loaded {len(ids)} IDs from CSV.")
+        return ids
+    except FileNotFoundError:
+        logger.error(f"Archive CSV file not found: {filepath}. Starting with an empty list.")
+        return []
+    except Exception as e:
+        logger.error(f"Error loading CSV {filepath}: {e}")
+        return []
+
+def scrape_top_ids_by_year(session: requests.Session, start_year: int, pages_to_scrape: int = 20) -> List[int]:
+    """
+    Scrapes BGG advanced search for top-ranked games published since a given year.
+    """
+    game_ids = []
+    consecutive_failures = 0
+    logger.info(f"Scraping {pages_to_scrape} pages for top games published since {start_year}...")
+    
+    for page in range(1, pages_to_scrape + 1):
+        # This URL uses the advanced search, sorted by rank, filtered by year published.
+        browse_url = (
+            f"https://boardgamegeek.com/search/boardgame/page/{page}"
+            f"?sort=rank&advsearch=1&range%5Byearpublished%5D%5Bmin%5D={start_year}"
+        )
+        try:
+            response = session.get(browse_url)
+            response.raise_for_status()
+            
+            initial_id_count = len(game_ids)
+            soup = BeautifulSoup(response.content, 'lxml')
+            
+            # The selector for advanced search results is different from the simple browse page.
+            links = soup.select('td.collection_objectname > div > a')
+            if not links:
+                logger.warning(f"No game links found on page {page}. The page structure may have changed.")
+                consecutive_failures += 1
+            else:
+                consecutive_failures = 0
+
+            for link in links:
+                href = link.get('href')
+                if href and '/boardgame/' in href:
+                    try:
+                        game_id = int(href.split('/')[2])
+                        if game_id not in game_ids:
+                            game_ids.append(game_id)
+                    except (ValueError, IndexError):
+                        continue
+            
+            if len(game_ids) == initial_id_count and links:
+                logger.warning(f"No new unique game IDs found on page {page}.")
+
+            logger.info(f"Scraped page {page}/{pages_to_scrape}, found {len(game_ids)} total unique IDs so far.")
+
+            if consecutive_failures >= 3:
+                logger.error("Failed to find game links for 3 consecutive pages. Aborting scrape.")
+                break
+
+            time.sleep(0.5) # Be respectful
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to scrape page {page}: {e}")
+            break
+            
+    return game_ids
+
 def main():
     """Example usage of the BGG data ingester."""
     ingester = BGGDataIngester()
     
-    # Example 1: Get hot games and their details
-    logger.info("Fetching hot games...")
-    hot_games = ingester.get_hot_games()
-    hot_game_ids = [game["id"] for game in hot_games]
+    # --- Configuration ---
+    # Assumes you have a CSV named 'bgg_top_games_archive.csv' in the same directory.
+    # This file should contain an 'id' column with BGG game IDs.
+    archive_csv_path = 'initial_data\\games.csv'
+    output_filename = 'bgg_top_games_updated'
+    current_year = datetime.datetime.now().year
+    start_year_for_scraping = current_year - 4
+    pages_of_new_games_to_scrape = 20 # Scrape ~2000 recent top games
     
-    logger.info("Fetching detailed data for hot games...")
-    detailed_games = ingester.get_game_details(hot_game_ids)
-    ingester.save_to_files(detailed_games, "bgg_hot_games")
+    # 1. Load game IDs from the archive CSV.
+    base_game_ids = load_ids_from_csv(archive_csv_path, id_column='BGGId')
     
-    # Example 2: Search for specific games
-    logger.info("Searching for Wingspan...")
-    search_results = ingester.search_games("Wingspan")
-    if search_results:
-        wingspan_details = ingester.get_game_details([search_results[0]["id"]])
-        ingester.save_to_files(wingspan_details, "wingspan_data")
+    # 2. Scrape for top-ranked games from recent years to fill in the gaps.
+    with requests.Session() as scrape_session:
+        scrape_session.headers.update({'User-Agent': 'BGG-Analysis-Script/1.0'})
+        recent_game_ids = scrape_top_ids_by_year(
+            scrape_session, 
+            start_year=start_year_for_scraping,
+            pages_to_scrape=pages_of_new_games_to_scrape
+        )
+        
+    # 3. Combine the lists and remove duplicates.
+    combined_ids = list(set(base_game_ids + recent_game_ids))
+    logger.info(f"Combined list contains {len(combined_ids)} unique game IDs.")
     
-    # Example 3: Get top ranked games (you'd need to implement ranking logic)
-    # For a portfolio project, you might want to get the top 1000 games
-    logger.info("For a full dataset, you could fetch top-ranked games by ID range...")
-    # top_game_ids = list(range(1, 1001))  # Example: first 1000 game IDs
-    # Be careful with large requests - respect BGG's servers!
-    
+    # 4. Use the API to get detailed data for the combined list.
+    if combined_ids:
+        logger.info(f"Fetching detailed data for {len(combined_ids)} games...")
+        detailed_games = ingester.get_game_details(combined_ids)
+
+        # Filter out games that didn't return data or have no rank
+        ranked_games = [g for g in detailed_games if g.get('bgg_rank') is not None]
+        logger.info(f"Found {len(ranked_games)} games with rank information.")
+
+        # Sort final list by BGG rank (lower is better)
+        ranked_games.sort(key=lambda x: x['bgg_rank'])
+
+        # 5. Save the results
+        ingester.save_to_files(ranked_games, output_filename)
+
     logger.info("Data ingestion complete!")
 
 if __name__ == "__main__":
