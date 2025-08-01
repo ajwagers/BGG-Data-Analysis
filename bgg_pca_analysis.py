@@ -9,7 +9,8 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def load_and_clean_data(filepath: str) -> pd.DataFrame:
+# --- Constants ---
+def load_and_clean_data(filepath: str, features_to_use: list) -> pd.DataFrame:
     """Loads and preprocesses the BGG data for analysis."""
     logger.info(f"Loading data from {filepath}...")
     try:
@@ -19,12 +20,7 @@ def load_and_clean_data(filepath: str) -> pd.DataFrame:
         return None
 
     # --- Feature Selection ---
-    features = [
-        'primary_name', 'year_published', 'min_players', 'max_players',
-        'min_playing_time', 'max_playing_time', 'min_age', 'average_rating',
-        'bayes_average', 'average_weight', 'bgg_rank', 'categories', 'mechanics'
-    ]
-    existing_features = [f for f in features if f in df.columns]
+    existing_features = [f for f in features_to_use if f in df.columns]
     df_analysis = df[existing_features].copy()
 
     # --- Drop fully empty columns ---
@@ -41,6 +37,22 @@ def load_and_clean_data(filepath: str) -> pd.DataFrame:
     if 'mechanics' in df_analysis.columns:
         df_analysis['main_mechanic'] = df_analysis['mechanics'].str.split(';').str[0].str.strip()
         df_analysis = df_analysis.drop(columns=['mechanics'])
+
+    if 'designers' in df_analysis.columns:
+        df_analysis['main_designer'] = df_analysis['designers'].str.split(';').str[0].str.strip()
+        df_analysis = df_analysis.drop(columns=['designers'])
+
+    if 'artists' in df_analysis.columns:
+        df_analysis['main_artist'] = df_analysis['artists'].str.split(';').str[0].str.strip()
+        df_analysis = df_analysis.drop(columns=['artists'])
+
+    if 'publishers' in df_analysis.columns:
+        df_analysis['main_publisher'] = df_analysis['publishers'].str.split(';').str[0].str.strip()
+        df_analysis = df_analysis.drop(columns=['publishers'])
+
+    if 'families' in df_analysis.columns:
+        df_analysis['main_family'] = df_analysis['families'].str.split(';').str[0].str.strip()
+        df_analysis = df_analysis.drop(columns=['families'])
 
     # --- Handling Missing Values ---
     numerical_cols = df_analysis.select_dtypes(include=np.number).columns
@@ -74,19 +86,21 @@ def perform_pcoa(data: pd.DataFrame) -> pd.DataFrame:
     distance_matrix = gower.gower_matrix(data_for_gower, cat_features=cat_features_mask)
     logger.info("Gower distance matrix calculated.")
 
-    logger.info("Performing Principal Coordinate Analysis (PCoA)...")
-    pcoa = MDS(n_components=2, dissimilarity='precomputed', random_state=42, n_init=1, max_iter=300)
+    n_components = 6
+    logger.info(f"Performing Principal Coordinate Analysis (PCoA) for {n_components} components...")
+    pcoa = MDS(n_components=n_components, dissimilarity='precomputed', random_state=42, n_init=1, max_iter=300)
     coords = pcoa.fit_transform(distance_matrix)
+    logger.info(f"PCoA stress for {n_components} components (lower is better): {pcoa.stress_:.4f}")
 
-    data['PC1'] = coords[:, 0]
-    data['PC2'] = coords[:, 1]
+    for i in range(n_components):
+        data[f'PC{i+1}'] = coords[:, i]
     logger.info("PCoA complete.")
 
     return data
 
-def perform_longer_analyses(filepath: str) -> pd.DataFrame:
+def perform_full_analysis_pipeline(filepath: str, features_to_use: list) -> pd.DataFrame:
     """Loads, cleans the data and performs PCoA."""
-    df_cleaned = load_and_clean_data(filepath)
+    df_cleaned = load_and_clean_data(filepath, features_to_use)
     if df_cleaned is not None:
         df_pcoa = perform_pcoa(df_cleaned)
         return df_pcoa
@@ -96,13 +110,45 @@ def perform_longer_analyses(filepath: str) -> pd.DataFrame:
 def main():
     """Main function to run the analysis."""
     csv_file = 'bgg_top_games_updated.csv'
-    df_pcoa = perform_longer_analyses(csv_file)
 
-    if df_pcoa is not None:
-        # Save the processed DataFrame for later use
-        output_file = 'bgg_pca_output.csv'
-        df_pcoa.to_csv(output_file, index=False)
-        logger.info(f"Processed data saved to {output_file}")
+    # --- Define Feature Subsets for Experimentation ---
+    # Each subset is a hypothesis about what makes games similar.
+    # 'primary_name' is always included as it's the identifier.
+    FEATURE_SUBSETS = {
+        "core_gameplay": [
+            'primary_name', 'year_published', 'min_players', 'max_players',
+            'min_playing_time', 'max_playing_time', 'min_age', 'average_weight',
+            'categories', 'mechanics'
+        ],
+        "community_ratings": [
+            'primary_name', 'average_rating', 'bayes_average', 'stddev',
+            'median', 'users_rated', 'num_weights', 'average_weight'
+        ],
+        "market_popularity": [
+            'primary_name', 'owned', 'wishing', 'trading', 'wanting',
+            'num_comments', 'users_rated', 'bgg_rank'
+        ],
+        "full_set": [
+            'primary_name', 'year_published', 'min_players', 'max_players',
+            'min_playing_time', 'max_playing_time', 'min_age', 'average_rating',
+            'bayes_average', 'average_weight', 'bgg_rank', 'categories', 'mechanics', 'families',
+            'owned', 'users_rated', 'trading', 'wanting', 'wishing', 'num_comments',
+            'num_weights', 'stddev', 'median', 'designers', 'artists', 'publishers'
+        ]
+    }
+
+    # --- Run Analysis for Each Subset ---
+    for subset_name, feature_list in FEATURE_SUBSETS.items():
+        logger.info(f"\n{'='*80}")
+        logger.info(f"RUNNING ANALYSIS FOR FEATURE SUBSET: '{subset_name}'")
+        logger.info(f"{'='*80}\n")
+
+        df_pcoa = perform_full_analysis_pipeline(csv_file, feature_list)
+
+        if df_pcoa is not None:
+            output_file = f'bgg_pca_output_{subset_name}.csv'
+            df_pcoa.to_csv(output_file, index=False)
+            logger.info(f"Processed data for '{subset_name}' saved to {output_file}")
 
 if __name__ == "__main__":
     main()

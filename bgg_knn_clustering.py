@@ -10,7 +10,9 @@ logger = logging.getLogger(__name__)
 
 def calculate_gower_distance(data: pd.DataFrame) -> np.ndarray:
     """Calculates Gower distance matrix."""
-    data_for_gower = data.drop(columns=['primary_name', 'PC1', 'PC2'])
+    # Dynamically find and remove all PC columns to make the script robust
+    pc_cols_to_drop = [col for col in data.columns if col.startswith('PC')]
+    data_for_gower = data.drop(columns=['primary_name'] + pc_cols_to_drop)
 
     # Manually create a boolean mask for categorical features.
     cat_features_mask = [dtype.name == 'category' for dtype in data_for_gower.dtypes]
