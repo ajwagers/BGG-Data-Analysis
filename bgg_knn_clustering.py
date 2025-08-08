@@ -1,72 +1,85 @@
 import pandas as pd
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
-import gower
+import hdbscan
 import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def calculate_gower_distance(data: pd.DataFrame) -> np.ndarray:
-    """Calculates Gower distance matrix."""
-    # Dynamically find and remove all PC columns to make the script robust
-    pc_cols_to_drop = [col for col in data.columns if col.startswith('PC')]
-    data_for_gower = data.drop(columns=['primary_name'] + pc_cols_to_drop)
-
-    # Manually create a boolean mask for categorical features.
-    cat_features_mask = [dtype.name == 'category' for dtype in data_for_gower.dtypes]
-
-    logger.info("Calculating Gower distance matrix... (this may take a moment)")
-    distance_matrix = gower.gower_matrix(data_for_gower, cat_features=cat_features_mask)
-    logger.info("Gower distance matrix calculated.")
-
-    return distance_matrix
-
-def perform_knn_clustering(distance_matrix: np.ndarray, data: pd.DataFrame, n_neighbors: int = 5) -> pd.DataFrame:
-    """Performs k-nearest neighbors clustering using Gower distance."""
-    logger.info(f"Finding {n_neighbors} nearest neighbors for each game...")
-    knn = NearestNeighbors(n_neighbors=n_neighbors, metric='precomputed')
-    knn.fit(distance_matrix)
-
-    # Find the nearest neighbors
-    distances, indices = knn.kneighbors()
-
-    nearest_neighbor_names = []
-    for idx in indices:
-        neighbor_names = data.iloc[idx]['primary_name'].tolist()
-        nearest_neighbor_names.append(neighbor_names[1:])  # Skip the first entry which is the game itself
-
-    data['nearest_neighbors'] = nearest_neighbor_names
-    logger.info("KNN clustering complete.")
+def perform_hdbscan_clustering(distance_matrix: np.ndarray, data: pd.DataFrame, min_cluster_size: int = 10) -> pd.DataFrame:
+    """
+    Performs HDBSCAN clustering on the Gower distance matrix to find natural game clusters.
+    
+    Args:
+        distance_matrix: A square matrix of distances between all games.
+        data: The DataFrame containing game info, must include 'primary_name'.
+        min_cluster_size: The minimum number of games required to form a cluster.
+    
+    Returns:
+        The input DataFrame with an added 'cluster_label' column. Noise points are labeled -1.
+    """
+    logger.info(f"Performing HDBSCAN clustering with min_cluster_size={min_cluster_size}...")
+    
+    # HDBSCAN is great for this because it can work directly on a distance matrix
+    # and doesn't require us to specify the number of clusters beforehand.
+    clusterer = hdbscan.HDBSCAN(metric='precomputed', 
+                                min_cluster_size=min_cluster_size,
+                                allow_single_cluster=True)
+    
+    clusterer.fit(distance_matrix)
+    
+    data['cluster_label'] = clusterer.labels_
+    
+    n_clusters = len(set(clusterer.labels_)) - (1 if -1 in clusterer.labels_ else 0)
+    n_noise = np.sum(clusterer.labels_ == -1)
+    
+    logger.info(f"HDBSCAN found {n_clusters} clusters and {n_noise} noise points.")
+    logger.info("Clustering complete.")
 
     return data
 
 def main():
-    """Main function to run KNN clustering."""
-    input_file = 'bgg_pca_output.csv'
-    try:
-        df_data = pd.read_csv(input_file)
+    """Main function to run KNN analysis for each feature subset."""
+    # In a larger project, this might be moved to a shared config file.
+    FEATURE_SUBSETS = [
+        "core_gameplay",
+        "community_ratings",
+        "market_popularity",
+        "full_set"
+    ]
 
-        # Ensure categorical columns are properly categorized
-        for col in df_data.select_dtypes(include=['object']).columns:
-            if col not in ['primary_name']:
-                df_data[col] = df_data[col].astype('category')
+    for subset_name in FEATURE_SUBSETS:
+        logger.info(f"\n{'='*80}")
+        logger.info(f"RUNNING HDBSCAN CLUSTERING FOR FEATURE SUBSET: '{subset_name}'")
+        logger.info(f"{'='*80}\n")
 
-        distance_matrix = calculate_gower_distance(df_data)
+        pca_input_file = f'bgg_pca_output_{subset_name}.csv'
+        matrix_input_file = f'gower_distance_matrix_{subset_name}.npy'
+
+        try:
+            df_data = pd.read_csv(pca_input_file)
+            distance_matrix = np.load(matrix_input_file)
+            logger.info(f"Loaded data from {pca_input_file} and distance matrix from {matrix_input_file}")
+        except FileNotFoundError as e:
+            logger.error(f"Could not find input file: {e.filename}. Please run bgg_pca_analysis.py first.")
+            continue  # Skip to the next subset
 
         if np.any(np.isnan(distance_matrix)):
-            logger.error("Distance matrix contains NaN values. Ensure all data is properly imputed.")
-            return
+            logger.error(f"Distance matrix for '{subset_name}' contains NaN values. Aborting this subset.")
+            continue
+        
+        # Find clusters. min_cluster_size is a key parameter to tune.
+        df_clustered = perform_hdbscan_clustering(distance_matrix, df_data, min_cluster_size=10)
 
-        df_knn = perform_knn_clustering(distance_matrix, df_data, n_neighbors=5)
+        # Save the processed DataFrame with cluster labels for later use
+        output_file = f'bgg_hdbscan_output_{subset_name}.csv'
+        try:
+            df_clustered.to_csv(output_file, index=False)
+            logger.info(f"HDBSCAN clustering results for '{subset_name}' saved to {output_file}")
+        except Exception as e:
+            logger.error(f"Could not save output file {output_file}. Error: {e}")
 
-        # Save the processed DataFrame with nearest neighbors for later use
-        output_file = 'bgg_knn_output.csv'
-        df_knn.to_csv(output_file, index=False)
-        logger.info(f"KNN clustering results saved to {output_file}")
-    except FileNotFoundError:
-        logger.error(f"File not found: {input_file}. Please run bgg_pca_analysis.py first.")
 
 if __name__ == "__main__":
     main()
