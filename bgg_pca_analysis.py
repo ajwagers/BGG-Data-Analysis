@@ -4,6 +4,7 @@ import gower
 from sklearn.impute import SimpleImputer
 from sklearn.manifold import MDS
 import logging
+from typing import List, Dict
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -80,6 +81,63 @@ def load_and_clean_data(filepath: str, features_to_use: list) -> pd.DataFrame:
 
     return df_analysis
 
+def generate_low_correlation_subsets(
+    base_data_path: str,
+    subset_sizes: List[int],
+    candidate_features: List[str]
+) -> Dict[str, List[str]]:
+    """
+    Generates feature subsets by greedily selecting features with low mutual correlation.
+
+    Args:
+        base_data_path: Path to the raw, unprocessed CSV data.
+        subset_sizes: A list of integers for the desired size of each subset.
+        candidate_features: A list of numerical column names to consider.
+
+    Returns:
+        A dictionary where keys are subset names (e.g., "low_corr_3") and
+        values are lists of selected feature names.
+    """
+    logger.info("--- Generating Low-Correlation Feature Subsets ---")
+    try:
+        df = pd.read_csv(base_data_path)
+    except FileNotFoundError:
+        logger.error(f"Base data file not found at {base_data_path}. Cannot generate low-correlation subsets.")
+        return {}
+
+    existing_candidates = [f for f in candidate_features if f in df.columns]
+    if len(existing_candidates) < max(subset_sizes, default=0):
+        logger.error(f"Not enough candidate features ({len(existing_candidates)}) exist in the data to create the largest requested subset size.")
+        return {}
+    
+    logger.info(f"Using {len(existing_candidates)} existing features for correlation analysis.")
+    
+    corr_matrix = df[existing_candidates].corr().abs()
+    
+    s = corr_matrix.unstack()
+    s = s[s.index.get_level_values(0) != s.index.get_level_values(1)]
+    if s.empty:
+        logger.error("Could not find any feature pairs to start correlation analysis.")
+        return {}
+        
+    selected_features = list(s.idxmin())
+    low_corr_subsets = {}
+
+    for size in sorted(subset_sizes):
+        if size < 2: continue
+        
+        while len(selected_features) < size:
+            remaining_features = corr_matrix.index.difference(selected_features)
+            if remaining_features.empty: break
+
+            avg_correlations = corr_matrix.loc[selected_features, remaining_features].mean(axis=0)
+            selected_features.append(avg_correlations.idxmin())
+        
+        subset_key = f"low_corr_{len(selected_features)}"
+        low_corr_subsets[subset_key] = ['primary_name'] + selected_features
+        logger.info(f"Generated subset '{subset_key}' with features: {selected_features}")
+    return low_corr_subsets
+
 def perform_pcoa(data: pd.DataFrame, subset_name: str) -> pd.DataFrame:
     """Calculates Gower distance, saves it, and performs PCoA (MDS)."""
     data_for_gower = data.drop(columns=['primary_name'])
@@ -145,6 +203,23 @@ def main():
             'num_weights', 'stddev', 'median', 'designers', 'artists', 'publishers'
         ]
     }
+
+    # --- Generate and add low-correlation subsets ---
+    # A pool of numerical features that are likely to have interesting relationships
+    CANDIDATE_NUMERICAL_FEATURES = [
+        'year_published', 'min_players', 'max_players', 'min_playing_time',
+        'max_playing_time', 'min_age', 'average_weight', 'average_rating',
+        'bayes_average', 'stddev', 'users_rated', 'num_weights', 'owned',
+        'wishing', 'trading', 'wanting', 'num_comments', 'bgg_rank'
+    ]
+    
+    low_corr_subsets = generate_low_correlation_subsets(
+        base_data_path=csv_file,
+        subset_sizes=list(range(3, 8)), # For subsets of size 3, 4, 5, 6, 7
+        candidate_features=CANDIDATE_NUMERICAL_FEATURES
+    )
+    
+    FEATURE_SUBSETS.update(low_corr_subsets)
 
     # --- Run Analysis for Each Subset ---
     for subset_name, feature_list in FEATURE_SUBSETS.items():
