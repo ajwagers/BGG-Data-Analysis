@@ -21,13 +21,17 @@ def perform_hdbscan_clustering(distance_matrix: np.ndarray, data: pd.DataFrame, 
     """
     logger.info(f"Performing HDBSCAN clustering with min_cluster_size={min_cluster_size}...")
     
+    # HDBSCAN's internal Cython code expects a C double (np.float64) matrix.
+    # The Gower matrix is often float32, so we ensure the correct dtype here.
+    distance_matrix_double = distance_matrix.astype(np.float64)
+
     # HDBSCAN is great for this because it can work directly on a distance matrix
     # and doesn't require us to specify the number of clusters beforehand.
     clusterer = hdbscan.HDBSCAN(metric='precomputed', 
                                 min_cluster_size=min_cluster_size,
                                 allow_single_cluster=True)
     
-    clusterer.fit(distance_matrix)
+    clusterer.fit(distance_matrix_double)
     
     data['cluster_label'] = clusterer.labels_
     
@@ -40,7 +44,7 @@ def perform_hdbscan_clustering(distance_matrix: np.ndarray, data: pd.DataFrame, 
     return data
 
 def main():
-    """Main function to run KNN analysis for each feature subset."""
+    """Main function to run HDBSCAN clustering for each feature subset."""
     # In a larger project, this might be moved to a shared config file.
     FEATURE_SUBSETS = [
         "core_gameplay",

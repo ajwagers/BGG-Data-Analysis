@@ -18,92 +18,6 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR = Path("visualizations")
 RANDOM_STATE = 42
 
-def plot_silhouette_analysis(data: pd.DataFrame, cluster_range: List[int], output_dir: Path):
-    """
-    Performs silhouette analysis for KMeans clustering on a range of n_clusters.
-    This visualization is adapted from the scikit-learn documentation to provide
-    a more informative plot for selecting the optimal number of clusters.
-    """
-    X = data[['PC1', 'PC2']].values
-
-    for n_clusters in cluster_range:
-        # Create a subplot with 1 row and 2 columns
-        fig, (ax1, ax2) = plt.subplots(1, 2)
-        fig.set_size_inches(18, 7)
-
-        # The 1st subplot is the silhouette plot
-        ax1.set_xlim([-0.2, 1])
-        # The (n_clusters+1)*10 is for inserting blank space between silhouette
-        # plots of individual clusters, to demarcate them clearly.
-        ax1.set_ylim([0, len(X) + (n_clusters + 1) * 10])
-
-        # Initialize the clusterer with n_clusters value and a random generator
-        # seed for reproducibility.
-        clusterer = KMeans(n_clusters=n_clusters, random_state=RANDOM_STATE, n_init=10)
-        cluster_labels = clusterer.fit_predict(X)
-
-        # The silhouette_score gives the average value for all the samples.
-        silhouette_avg = silhouette_score(X, cluster_labels)
-        logger.info(f"For n_clusters = {n_clusters}, the average silhouette_score is : {silhouette_avg:.4f}")
-
-        # Compute the silhouette scores for each sample
-        sample_silhouette_values = silhouette_samples(X, cluster_labels)
-
-        y_lower = 10
-        for i in range(n_clusters):
-            # Aggregate the silhouette scores for samples belonging to cluster i, and sort them
-            ith_cluster_silhouette_values = sample_silhouette_values[cluster_labels == i]
-            ith_cluster_silhouette_values.sort()
-
-            size_cluster_i = ith_cluster_silhouette_values.shape[0]
-            y_upper = y_lower + size_cluster_i
-
-            color = cm.nipy_spectral(float(i) / n_clusters)
-            ax1.fill_betweenx(np.arange(y_lower, y_upper),
-                              0, ith_cluster_silhouette_values,
-                              facecolor=color, edgecolor=color, alpha=0.7)
-
-            # Label the silhouette plots with their cluster numbers at the middle
-            ax1.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i+1))
-
-            # Compute the new y_lower for next plot
-            y_lower = y_upper + 10  # 10 for the 0 samples
-
-        ax1.set_title("Silhouette plot for the various clusters")
-        ax1.set_xlabel("Silhouette coefficient values")
-        ax1.set_ylabel("Cluster label")
-
-        # The vertical line for average silhouette score of all the values
-        ax1.axvline(x=silhouette_avg, color="red", linestyle="--")
-
-        ax1.set_yticks([])  # Clear the yaxis labels / ticks
-        ax1.set_xticks([-0.2, 0, 0.2, 0.4, 0.6, 0.8, 1])
-
-        # 2nd Plot showing the actual clusters formed
-        colors = cm.nipy_spectral(cluster_labels.astype(float) / n_clusters)
-        ax2.scatter(X[:, 0], X[:, 1], marker='.', s=30, lw=0, alpha=0.7, c=colors, edgecolor='k')
-
-        # Labeling the clusters
-        centers = clusterer.cluster_centers_
-        # Draw white circles at cluster centers
-        ax2.scatter(centers[:, 0], centers[:, 1], marker='o', c="white", alpha=1, s=200, edgecolor='k')
-
-        for i, c in enumerate(centers):
-            ax2.scatter(c[0], c[1], marker=f'${i+1}$', alpha=1, s=50, edgecolor='k')
-
-        ax2.set_title("Visualization of the clustered data")
-        ax2.set_xlabel("Principal Component 1")
-        ax2.set_ylabel("Principal Component 2")
-
-        plt.suptitle((f"Silhouette analysis for KMeans clustering with n_clusters = {n_clusters}"),
-                     fontsize=14, fontweight='bold')
-
-        silhouette_plot_filename = output_dir / f'silhouette_analysis_{n_clusters}_clusters.png'
-        plt.savefig(silhouette_plot_filename, bbox_inches='tight')
-        logger.info(f"Silhouette plot saved to {silhouette_plot_filename}")
-
-    plt.show()
-
 def plot_correlation_heatmap(data: pd.DataFrame, output_dir: Path):
     """Plots correlation heatmap of numerical features."""
     logger.info("Generating Correlation Heatmap...")
@@ -112,8 +26,9 @@ def plot_correlation_heatmap(data: pd.DataFrame, output_dir: Path):
     numeric_data = data.select_dtypes(include=np.number)
     correlation_matrix = numeric_data.corr()
 
-    plt.figure(figsize=(12, 8))
-    sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt='.2f')
+    # For a large number of features, annotations become unreadable.
+    plt.figure(figsize=(16, 12))
+    sns.heatmap(correlation_matrix, annot=False, cmap='coolwarm')
     plt.title('Correlation Heatmap of Numerical Features')
 
     heatmap_filename = output_dir / 'correlation_heatmap.png'
@@ -158,10 +73,11 @@ def plot_pc_relationships(data: pd.DataFrame, output_dir: Path):
 
     # --- Plot 3: Pair Plot ---
     logger.info("Generating pair plot (this might take a moment)...")
-    pairplot_cols = ['PC1', 'PC2', 'bgg_rank', 'average_weight', 'average_rating', 'year_published']
-    pairplot_cols_exist = [col for col in pairplot_cols if col in data.columns]
+    # Use all numerical columns from the winning subset for the pair plot.
+    # This can be slow and memory-intensive if the subset has many features.
+    pairplot_cols = data.select_dtypes(include=np.number).columns.tolist()
     
-    pair_plot = sns.pairplot(data[pairplot_cols_exist], plot_kws={'alpha': 0.3})
+    pair_plot = sns.pairplot(data[pairplot_cols], plot_kws={'alpha': 0.3})
     pair_plot.fig.suptitle('Pair Plot of Key Features and Principal Components', y=1.02, fontsize=16)
     pairplot_filename = output_dir / 'pairplot_features_vs_pcs.png'
     plt.savefig(pairplot_filename, bbox_inches='tight')
@@ -278,52 +194,51 @@ def analyze_and_plot_clusters(data: pd.DataFrame, n_clusters: int, output_dir: P
 
 def main():
     """Main function to run visualizations."""
-    # --- CHOOSE THE INPUT FILE TO VISUALIZE ---
-    # After running the new bgg_pca_analysis.py, you will have multiple output files.
-    # Change this variable to point to the file you want to analyze.
-    # Example files: 'bgg_pca_output_core_gameplay.csv', 'bgg_pca_output_community_ratings.csv', etc.
-    input_file = 'bgg_pca_output_full_set.csv'
     try:
+        # 1. Read evaluation results to find the best feature set and optimal k
+        evaluation_results_file = 'feature_set_evaluation_results.csv'
+        results_df = pd.read_csv(evaluation_results_file)
+        winner = results_df.iloc[0]
+        winner_subset = winner['Feature Subset']
+        optimal_k = int(winner['Best k'])
+        logger.info(f"🏆 Automatically selected winning feature set: '{winner_subset}' with optimal k={optimal_k}")
+
+        # 2. Load the data for the winning subset
+        input_file = f'bgg_pca_output_{winner_subset}.csv'
         df_data = pd.read_csv(input_file)
+        logger.info(f"Loading data from the winning subset file: {input_file}")
 
         # Ensure categorical columns are properly categorized
         for col in df_data.select_dtypes(include=['object']).columns:
             if col not in ['primary_name']:
                 df_data[col] = df_data[col].astype('category')
 
-        # Create output directory if it doesn't exist
+        # 3. Create output directory if it doesn't exist
         OUTPUT_DIR.mkdir(exist_ok=True)
         logger.info(f"Visualizations will be saved to '{OUTPUT_DIR}/'")
+        
+        logger.info(f"\n--- Generating Deep-Dive Visualizations for '{winner_subset}' ---")
+        logger.info(f"Note: Silhouette plots for all subsets are in the 'evaluation_plots/' directory.")
 
-        # 1. Run silhouette analysis to help determine the optimal number of clusters
-        cluster_range_to_test = [3, 4, 5, 6, 7]
-        logger.info(f"Performing silhouette analysis for n_clusters in {cluster_range_to_test}...")
-        plot_silhouette_analysis(df_data, cluster_range_to_test, OUTPUT_DIR)
+        # 4. Plot a correlation heatmap of all numerical features from the original dataset
+        raw_data_file = 'bgg_top_games_updated.csv'
+        try:
+            df_raw = pd.read_csv(raw_data_file)
+            plot_correlation_heatmap(df_raw, OUTPUT_DIR)
+        except FileNotFoundError:
+            logger.warning(f"Raw data file '{raw_data_file}' not found. Skipping full correlation heatmap.")
+            logger.warning("Generating heatmap for the winning subset only.")
+            plot_correlation_heatmap(df_data, OUTPUT_DIR)
 
-        # 2. Plot a correlation heatmap of numerical features
-        plot_correlation_heatmap(df_data.select_dtypes(include=np.number), OUTPUT_DIR)
-
-        # 3. Plot relationships between PCs and key features
+        # 5. Plot relationships between PCs and key features for the winning subset
         plot_pc_relationships(df_data, OUTPUT_DIR)
 
-        # 4. Prompt user to choose an optimal k based on the silhouette plots
-        optimal_k = 0
-        while True:
-            try:
-                k_input = input(f"\nBased on the silhouette plots, please enter the optimal number of clusters (k) from {cluster_range_to_test}: ")
-                optimal_k = int(k_input)
-                if optimal_k in cluster_range_to_test:
-                    break
-                else:
-                    logger.warning(f"Please enter a value that was tested: {cluster_range_to_test}")
-            except ValueError:
-                logger.warning("Invalid input. Please enter an integer.")
-
-        # 5. Perform final clustering and analysis with the chosen k.
+        # 6. Perform final clustering and analysis with the automatically determined k.
+        logger.info(f"\nProceeding with final analysis using automatically determined k={optimal_k}...")
         analyze_and_plot_clusters(df_data, n_clusters=optimal_k, output_dir=OUTPUT_DIR)
 
-    except FileNotFoundError:
-        logger.error(f"File not found: {input_file}. Please run bgg_pca_analysis.py first.")
+    except FileNotFoundError as e:
+        logger.error(f"Could not find a required file: {e.filename}. Please ensure you have run bgg_pca_analysis.py and bgg_evaluate_features.py first.")
 
 if __name__ == "__main__":
     main()
