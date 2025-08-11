@@ -24,6 +24,14 @@ def plot_correlation_heatmap(data: pd.DataFrame, output_dir: Path):
 
     # Select only numerical columns
     numeric_data = data.select_dtypes(include=np.number)
+
+    # Drop columns that are entirely NaN, as they will have no correlation and create blank rows/cols.
+    initial_cols = numeric_data.shape[1]
+    numeric_data = numeric_data.dropna(axis=1, how='all')
+    final_cols = numeric_data.shape[1]
+    if initial_cols > final_cols:
+        logger.info(f"Removed {initial_cols - final_cols} empty numerical columns from heatmap calculation.")
+
     correlation_matrix = numeric_data.corr()
 
     # For a large number of features, annotations become unreadable.
@@ -34,7 +42,7 @@ def plot_correlation_heatmap(data: pd.DataFrame, output_dir: Path):
     heatmap_filename = output_dir / 'correlation_heatmap.png'
     plt.savefig(heatmap_filename, bbox_inches='tight')
     logger.info(f"Correlation heatmap saved to {heatmap_filename}")
-    plt.show()
+    plt.close(plt.gcf())  # Close figure to free memory
 
 def plot_pc_relationships(data: pd.DataFrame, output_dir: Path):
     """
@@ -56,7 +64,7 @@ def plot_pc_relationships(data: pd.DataFrame, output_dir: Path):
         pc1_rank_filename = output_dir / 'pc1_vs_bgg_rank.png'
         plt.savefig(pc1_rank_filename, bbox_inches='tight')
         logger.info(f"PC1 vs. Rank plot saved to {pc1_rank_filename}")
-        plt.show()
+        plt.close(plt.gcf())
 
     # --- Plot 2: PC1 vs. Average Weight ---
     if 'average_weight' in data.columns:
@@ -69,7 +77,7 @@ def plot_pc_relationships(data: pd.DataFrame, output_dir: Path):
         pc1_weight_filename = output_dir / 'pc1_vs_average_weight.png'
         plt.savefig(pc1_weight_filename, bbox_inches='tight')
         logger.info(f"PC1 vs. Weight plot saved to {pc1_weight_filename}")
-        plt.show()
+        plt.close(plt.gcf())
 
     # --- Plot 3: Pair Plot ---
     logger.info("Generating pair plot (this might take a moment)...")
@@ -79,10 +87,15 @@ def plot_pc_relationships(data: pd.DataFrame, output_dir: Path):
     
     pair_plot = sns.pairplot(data[pairplot_cols], plot_kws={'alpha': 0.3})
     pair_plot.fig.suptitle('Pair Plot of Key Features and Principal Components', y=1.02, fontsize=16)
+
+    # Adjust subplot margins to make axis labels more readable, especially with long names.
+    # Values are fractions of figure width/height. Larger values create bigger margins.
+    pair_plot.fig.subplots_adjust(left=0.1, bottom=0.1)
+
     pairplot_filename = output_dir / 'pairplot_features_vs_pcs.png'
     plt.savefig(pairplot_filename, bbox_inches='tight')
     logger.info(f"Pair plot saved to {pairplot_filename}")
-    plt.show()
+    plt.close(pair_plot.fig)
 
 def find_central_games(data: pd.DataFrame, kmeans_model: KMeans) -> pd.DataFrame:
     """
@@ -190,7 +203,7 @@ def analyze_and_plot_clusters(data: pd.DataFrame, n_clusters: int, output_dir: P
     final_plot_filename = output_dir / f'final_{n_clusters}_clusters_plot.png'
     plt.savefig(final_plot_filename, bbox_inches='tight')
     logger.info(f"Final cluster plot saved to {final_plot_filename}")
-    plt.show()
+    plt.close(plt.gcf())
 
 def main():
     """Main function to run visualizations."""
