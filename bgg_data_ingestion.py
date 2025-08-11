@@ -117,7 +117,8 @@ class BGGDataIngester:
             "num_weights": None,
             "average_weight": None,
             "bgg_rank": None,
-            "subdomain_ranks": {}
+            "subdomain_ranks": {},
+            **{f"votes_{i}": 0 for i in range(1, 11)}
         }
         
         # Basic info
@@ -209,6 +210,19 @@ class BGGDataIngester:
                                 game_data["bgg_rank"] = int(rank_value)
                             else:
                                 game_data["subdomain_ranks"][rank_name] = int(rank_value)
+        
+        # Add parsing for rating distribution poll
+        for poll in item.findall("poll"):
+            if poll.get("name") == "boardgame_rating":
+                results = poll.find("results")
+                if results is not None:
+                    for result in results.findall("result"):
+                        level = result.get("level")
+                        numvotes = result.get("numvotes")
+                        if level and numvotes and level.isdigit():
+                            key = f"votes_{level}"
+                            if key in game_data:
+                                game_data[key] = int(numvotes)
         
         return game_data
     

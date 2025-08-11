@@ -5,3 +5,4 @@ evaluation_plots/
 initial_data/
 *.npy
 mechanics_plots/
+Screenshot*.png

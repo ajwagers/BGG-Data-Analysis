@@ -23,8 +23,8 @@ def load_and_prepare_data(filepath: str) -> pd.DataFrame:
         return None
 
     # --- Data Cleaning ---
-    # Drop rows where essential data is missing
-    df.dropna(subset=['year_published', 'mechanics', 'average_weight'], inplace=True)
+    # Drop rows where essential data is missing for any of our analyses
+    df.dropna(subset=['year_published', 'mechanics', 'average_weight', 'bgg_rank', 'categories'], inplace=True)
     
     # Convert year to integer
     df['year_published'] = df['year_published'].astype(int)
@@ -34,6 +34,9 @@ def load_and_prepare_data(filepath: str) -> pd.DataFrame:
     
     # Add a column for the number of mechanics
     df['num_mechanics'] = df['mechanics_list'].apply(len)
+
+    # Extract primary category to use as genre
+    df['main_category'] = df['categories'].str.split(';').str[0].str.strip()
     
     # Filter out games with no mechanics listed
     df = df[df['num_mechanics'] > 0].copy()
@@ -53,27 +56,32 @@ def plot_avg_mechanics_over_time(df: pd.DataFrame, output_dir: Path):
         avg_num_mechanics=('num_mechanics', 'mean'),
         num_games=('id', 'count')
     ).reset_index()
-    
+
     # Filter for a reasonable time range to avoid noise from very old years with few games
-    yearly_stats = yearly_stats[yearly_stats['year_published'] >= 1980]
-    
-    fig, ax1 = plt.subplots(figsize=(15, 7))
-    
-    # Plot 1: Average number of mechanics (line plot on primary y-axis)
+    yearly_stats = yearly_stats[yearly_stats['year_published'] >= 1980].copy()
+
+    # Calculate a 5-year moving average to smooth the trendline
+    yearly_stats['moving_avg'] = yearly_stats['avg_num_mechanics'].rolling(window=5, center=True, min_periods=1).mean()
+
+    fig, ax1 = plt.subplots(figsize=(15, 7))    
+
+    # Plot the background bars first on a secondary y-axis
+    ax2 = ax1.twinx()
+    # Use plt.bar instead of sns.barplot to ensure the x-axis is treated numerically, aligning it with the line plot.
+    ax2.bar(yearly_stats['year_published'], yearly_stats['num_games'], color='lightgrey', alpha=0.6, label='Games Published')
+    ax2.set_ylabel('Number of Games Published', color='grey', fontsize=12)
+    ax2.tick_params(axis='y', labelcolor='grey')
+    # Set the y-axis limit for the bar graph to a fixed value
+    ax2.set_ylim(0, 2200)
+    ax2.grid(False) # Turn off grid for the background axis
+
+    # Plot the foreground lines on the primary y-axis so they appear on top
     sns.lineplot(data=yearly_stats, x='year_published', y='avg_num_mechanics', ax=ax1, color='dodgerblue', label='Avg. Mechanics per Game')
-    sns.regplot(data=yearly_stats, x='year_published', y='avg_num_mechanics', scatter=False, ax=ax1, color='red', line_kws={'linestyle':'--'}, label='Trendline')
+    sns.lineplot(data=yearly_stats, x='year_published', y='moving_avg', ax=ax1, color='red', linestyle='--', label='5-Year Moving Average')
     ax1.set_xlabel('Year Published', fontsize=12)
     ax1.set_ylabel('Average Number of Mechanics', color='dodgerblue', fontsize=12)
     ax1.tick_params(axis='y', labelcolor='dodgerblue')
-    ax1.grid(True, which='major', axis='y',
-    linestyle='--', linewidth=0.5)
-
-    # Plot 2: Number of games (bar plot on secondary y-axis)
-    ax2 = ax1.twinx()
-    sns.barplot(data=yearly_stats, x='year_published', y='num_games', ax=ax2, color='lightgrey', alpha=0.6, label='Games Published')
-    ax2.set_ylabel('Number of Games Published', color='grey', fontsize=12)
-    ax2.tick_params(axis='y', labelcolor='grey')
-    ax2.set_ylim(0, yearly_stats['num_games'].max() * 1.1) # Give some headroom
+    ax1.grid(True, which='major', axis='y', linestyle='--', linewidth=0.5)
 
     # Final plot adjustments
     plt.title('Average Mechanics per Game & Number of Games Published Over Time', fontsize=16)
@@ -82,12 +90,74 @@ def plot_avg_mechanics_over_time(df: pd.DataFrame, output_dir: Path):
     # Combine legends
     lines, labels = ax1.get_legend_handles_labels()
     bars, bar_labels = ax2.get_legend_handles_labels()
-    ax2.legend(lines + bars, labels + bar_labels, loc='upper left')
+    ax1.legend(lines + bars, labels + bar_labels, loc='upper left')
     
     filename = output_dir / "avg_mechanics_over_time.png"
     plt.savefig(filename, bbox_inches='tight')
     logger.info(f"Plot saved to {filename}")
     plt.close()
+
+def plot_games_published_per_year(df: pd.DataFrame, output_dir: Path):
+    """Calculates and plots the number of games published per year."""
+    logger.info("Analyzing number of games published per year...")
+    
+    # Group by year and count the number of games
+    yearly_counts = df.groupby('year_published').size().reset_index(name='num_games')
+    
+    # Filter for a reasonable time range
+    yearly_counts = yearly_counts[yearly_counts['year_published'] >= 1980]
+    
+    plt.figure(figsize=(15, 7))
+    ax = sns.barplot(data=yearly_counts, x='year_published', y='num_games', color='steelblue')
+    
+    plt.title('Number of Games Published Per Year', fontsize=16)
+    plt.xlabel('Year Published')
+    plt.ylabel('Number of Games')
+    plt.xticks(rotation=90)
+    
+    # Make x-axis labels more readable by showing every 5th year
+    for index, label in enumerate(ax.get_xticklabels()):
+        if index % 5 != 0:
+            label.set_visible(False)
+
+    filename = output_dir / "games_published_per_year.png"
+    plt.savefig(filename, bbox_inches='tight')
+    logger.info(f"Plot saved to {filename}")
+    plt.close()
+
+def plot_num_mechanics_distribution(df: pd.DataFrame, output_dir: Path):
+    """
+    Calculates and plots the distribution of the number of mechanics per game.
+    """
+    logger.info("Analyzing distribution of the number of mechanics...")
+
+    # Calculate the percentage of games for each count of mechanics
+    dist_series = df['num_mechanics'].value_counts(normalize=True).mul(100).sort_index()
+    dist_df = dist_series.reset_index()
+    dist_df.columns = ['num_mechanics', 'percentage']
+
+    # For better visualization, cap the number of mechanics shown if it's very high
+    max_mechanics_to_plot = 30
+    dist_df = dist_df[dist_df['num_mechanics'] <= max_mechanics_to_plot]
+
+    plt.figure(figsize=(15, 8))
+    ax = sns.barplot(data=dist_df, x='num_mechanics', y='percentage', color='teal')
+
+    plt.title('Distribution of the Number of Mechanics per Game', fontsize=16)
+    plt.xlabel('Number of Mechanics in a Game')
+    plt.ylabel('Percentage of Games (%)')
+    
+    # Add percentage labels on top of each bar for clarity
+    for p in ax.patches:
+        ax.annotate(f'{p.get_height():.1f}%', 
+                    (p.get_x() + p.get_width() / 2., p.get_height()), 
+                    ha='center', va='center', xytext=(0, 9), textcoords='offset points')
+
+    filename = output_dir / "num_mechanics_distribution.png"
+    plt.savefig(filename, bbox_inches='tight')
+    logger.info(f"Plot saved to {filename}")
+    plt.close()
+
 def plot_weight_vs_mechanics(df: pd.DataFrame, output_dir: Path):
     """Analyzes and plots the relationship between game weight and number of mechanics."""
     logger.info("Analyzing game weight vs. number of mechanics...")
@@ -250,6 +320,121 @@ def analyze_mechanic_pairs(df: pd.DataFrame, mechanic_counts: pd.Series, output_
     plot_lift(overrepresented, "Top 20 Overrepresented Mechanic Pairs (Co-occur More Than Expected)", "overrepresented_pairs.png")
     plot_lift(underrepresented, "Top 20 Underrepresented Mechanic Pairs (Co-occur Less Than Expected)", "underrepresented_pairs.png")
 
+def plot_top_10_mechanic_trends_by_year(df: pd.DataFrame, output_dir: Path):
+    """Analyzes and plots the frequency of mechanics in top 10 ranked games since 2000."""
+    logger.info("Analyzing mechanic frequency in top 10 games per year (since 2000)...")
+
+    # Filter for years 2000 and later
+    df_recent = df[df['year_published'] >= 2000].copy()
+
+    # Sort by year and rank to easily get the top 10
+    df_sorted = df_recent.sort_values(by=['year_published', 'bgg_rank'], ascending=[True, True])
+
+    # Get the top 10 ranked games for each year
+    top_10_per_year = df_sorted.groupby('year_published').head(10)
+
+    # Explode the mechanics list and count the frequency of each mechanic in this elite set
+    mechanic_counts_in_top_games = top_10_per_year.explode('mechanics_list')['mechanics_list'].value_counts()
+
+    # Plot the top 25 most frequent mechanics
+    top_n = 25
+    plt.figure(figsize=(12, 12))
+    sns.barplot(x=mechanic_counts_in_top_games.head(top_n).values, y=mechanic_counts_in_top_games.head(top_n).index, palette='rocket')
+    plt.title(f'Top {top_n} Most Frequent Mechanics in Top 10 Games/Year (Since 2000)', fontsize=16)
+    plt.xlabel('Total Appearances in Top 10s')
+    plt.ylabel('Mechanic')
+    filename = output_dir / "mechanics_in_top_10_games.png"
+    plt.savefig(filename, bbox_inches='tight')
+    logger.info(f"Plot saved to {filename}")
+    plt.close()
+
+def plot_mechanics_by_weight_trend(df: pd.DataFrame, output_dir: Path):
+    """
+    Plots the trend of the mean number of mechanics over time, grouped by game weight.
+    """
+    logger.info("Analyzing mechanics by weight trend over time...")
+
+    # Filter data for the relevant time period
+    df_filtered = df[df['year_published'] >= 2000].copy()
+
+    # Create integer-based weight groups (0-1, 1-2, etc.)
+    bins = [0, 1, 2, 3, 4, 5]
+    labels = ['0-1', '1-2', '2-3', '3-4', '4-5']
+    df_filtered['weight_group_int'] = pd.cut(df_filtered['average_weight'], bins=bins, labels=labels, right=False, include_lowest=True)
+
+    # Group by year and the new weight group, then calculate the mean number of mechanics
+    trend_data = df_filtered.groupby(['year_published', 'weight_group_int'])['num_mechanics'].mean().reset_index()
+    trend_data.rename(columns={'num_mechanics': 'mean_mechanics'}, inplace=True)
+
+    # Define the custom color mapping as requested
+    color_map = {
+        '0-1': 'orange',
+        '1-2': 'red',
+        '2-3': 'pink',
+        '3-4': 'purple',
+        '4-5': 'navy'
+    }
+
+    # Create the plot
+    plt.figure(figsize=(12, 7))
+    ax = sns.lineplot(data=trend_data, x='year_published', y='mean_mechanics', hue='weight_group_int', palette=color_map, hue_order=labels)
+
+    # Style the plot according to the requirements
+    plt.title('Mechanics by Weight Trend', fontsize=16)
+    plt.xlabel('Year Published')
+    plt.ylabel('Mean Mechanics')
+    plt.legend(title='Weight Group', bbox_to_anchor=(1.02, 1), loc='upper left')
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+    filename = output_dir / "mechanics_by_weight_trend.png"
+    plt.savefig(filename, bbox_inches='tight')
+    logger.info(f"Plot saved to {filename}")
+    plt.close()
+
+def save_top_games_by_year_to_csv(df: pd.DataFrame):
+    """Identifies the top 5 ranked games for each year and saves them to a CSV file."""
+    logger.info("Analyzing top 5 ranked games per year...")
+
+    # We only need years with at least 5 games to have a meaningful top 5
+    year_counts = df['year_published'].value_counts()
+    valid_years = year_counts[year_counts >= 5].index
+    df_filtered = df[df['year_published'].isin(valid_years)].copy()
+
+    # Sort by year (descending) and rank (ascending)
+    df_sorted = df_filtered.sort_values(by=['year_published', 'bgg_rank'], ascending=[False, True])
+
+    # Get the top 5 games for each year
+    top_games_by_year = df_sorted.groupby('year_published').head(5)
+
+    # Select and format the columns for the final table
+    result_table = top_games_by_year[[
+        'year_published',
+        'bgg_rank',
+        'primary_name',
+        'main_category',
+        'mechanics'
+    ]].copy()
+
+    # Rename columns for clarity
+    result_table.rename(columns={
+        'year_published': 'Year',
+        'bgg_rank': 'Rank',
+        'primary_name': 'Game',
+        'main_category': 'Genre',
+        'mechanics': 'Mechanics'
+    }, inplace=True)
+
+    # Convert rank to integer for cleaner display
+    result_table['Rank'] = result_table['Rank'].astype(int)
+
+    # Save the resulting table to a CSV file
+    output_csv_path = "top_5_games_by_year.csv"
+    try:
+        result_table.to_csv(output_csv_path, index=False, encoding='utf-8')
+        logger.info(f"Top 5 games by year table saved to {output_csv_path}")
+    except Exception as e:
+        logger.error(f"Failed to save top games table to {output_csv_path}: {e}")
+
 def main():
     """Main function to run all mechanics analyses."""
     input_file = 'bgg_top_games_updated.csv'
@@ -259,11 +444,16 @@ def main():
     if df is not None:
         logger.info("\n--- Starting Mechanics Analysis ---")
         
+        plot_games_published_per_year(df, OUTPUT_DIR)
         plot_avg_mechanics_over_time(df, OUTPUT_DIR)
+        plot_num_mechanics_distribution(df, OUTPUT_DIR)
         plot_weight_vs_mechanics(df, OUTPUT_DIR)
         mechanic_counts = plot_mechanic_frequency(df, OUTPUT_DIR)
         plot_top_mechanics_trends(df, mechanic_counts, OUTPUT_DIR)
         analyze_mechanic_pairs(df, mechanic_counts, OUTPUT_DIR)
+        save_top_games_by_year_to_csv(df)
+        plot_top_10_mechanic_trends_by_year(df, OUTPUT_DIR)
+        plot_mechanics_by_weight_trend(df, OUTPUT_DIR)
         
         logger.info("\n--- Mechanics Analysis Complete ---")
         logger.info(f"All plots saved in '{OUTPUT_DIR}' directory.")
